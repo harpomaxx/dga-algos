@@ -1,0 +1,207 @@
+---
+title: "dga-report1"
+author: "Harpo"
+date: "10/24/2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+source('../dga-prep.R')
+suppressPackageStartupMessages(library(caret))
+suppressPackageStartupMessages(library(RWeka))
+suppressPackageStartupMessages(library(lattice))
+suppressPackageStartupMessages(library(dplyr))
+```
+## Highligths
+* Four baseline models are evaluating on a dataset containing 40000 samples of DGA and LEGIT domain names
+* Features considering frequency on n-grams, dictionary, length and entropy are constructed.
+* Random Forest outperforms amongthe four models 
+
+###Results:
+Accuracy : 0.9486
+Sensitivity : 0.9570          
+Specificity : 0.9403  
+
+## Raw Datasets
+
+Two Datasets:
+
+1.  40000 samples (0.5 legit and 0.5 dga) from andre Waeva <https://github.com/andrewaeva/DGA>
+
+```{r datasets, echo=FALSE}
+
+load("/home/harpo/Dropbox/ongoing-work/dga/data/datadriven/legit-dga_domains-pablo.csv.rda")
+andrew=datasample[,-c(3)]
+```
+
+```{r plot2,echo=FALSE }
+head(andrew[c(1,2,3,4)])
+```
+
+
+## Dataset preprocess
+
+The following new features were created using Jay Jacobs approach: 
+
+1.  Onegram
+2.  Twogram
+3.  Threegram
+4.  Fourgram
+5.  Fivegram
+6.  3,4,5 grams
+7.  Entropy
+8.  Length
+9.  Dict Freq: 
+
+```{r featres,echo=FALSE }
+head(andrew[c(5:13)])
+```
+
+## Discriminative power of selected features:
+
+Matrix scatter plot for features on Andre W. dataset. 
+```{r plot_scatter2,echo=F}
+create_matrix_plot(andrew)
+```
+
+## Experiments on dataset from Andre W.
+
+Dataset is split in 80/20 for training/testing
+
+```{r andrew, echo=FALSE}
+set.seed(1492)
+datasample=andrew
+trainindex <- createDataPartition(datasample$subclass, p=0.80, list=F)
+# only train with these fields:
+fields <- c("class", "length", "entropy", "dict", "gram345", "onegram",
+            "twogram", "threegram", "fourgram","fivegram")
+# Now you can create a training and test data set 
+traindga <- datasample[trainindex, fields]
+# going to leave all the fields in the test data
+testdga <- datasample[-trainindex, ]
+```
+Both datasets are used for building and testing four models:
+
+1. Logistic Regression (Simple linear discriminant classifier)
+2. C4.5 Classification Tree (Classification Tree)
+3. SVM using a radial basis kernel (non Linear Classifier)
+4. Random Forest (Boost algorithm)
+
+Each model is evaluated using a 10-folds CV on the trainset and then tested on the testset
+
+```{r models, eval=FALSE, message=FALSE, warning=FALSE}
+
+# Validation method
+ctrl_fast <- trainControl(method="cv", 
+                     repeats=1,
+                     number=10, 
+                     summaryFunction=twoClassSummary,
+                     verboseIter=T,
+                     classProbs=TRUE,
+                     allowParallel = TRUE)                     
+# Random Forest
+rfFit <- train(class ~ .,
+               data = traindga,
+               metric="ROC",
+               method = "rf",
+               trControl = ctrl_fast)
+# SVM 
+svmFit <- train(class ~ .,
+                data = traindga,
+                method = "svmRadial",
+                preProc = c("center", "scale"),
+                metric="ROC",
+                tuneLength = 10,
+                trControl = ctrl_fast)
+#c4.5
+c45Fit <- train(class ~ .,
+                data = traindga,
+                method = "J48",
+                metric="ROC",
+                trControl = ctrl_fast)
+#Logitisc Regression
+glmFit <- train(class ~ .,
+                data = traindga,
+                method = "glm",
+                family=binomial(link='logit'),
+                metric="ROC",
+                trControl = ctrl_fast)
+
+```
+
+##Results on testset
+```{r preds, include=FALSE}
+load("../models/andrew_models.rda")
+predsglm=predict(glmFit,testdga[,-1])
+
+predssvm=predict(svmFit,testdga[,-1])
+predsrf=predict(rfFit,testdga)
+predsrfprobs=predict(rfFit,testdga,type='prob')
+```
+
+###Logitisc Regression:
+```{r logistic}
+print(confusionMatrix(predsglm,testdga$class)) #first level failure, second level success
+```
+
+###C45 classification tree:
+```{r c451, include=FALSE}
+ctrl_fast <- trainControl(method="cv", 
+                     repeats=1,
+                     number=10, 
+                     summaryFunction=twoClassSummary,
+                     verboseIter=T,
+                     classProbs=TRUE,
+                     allowParallel = TRUE)
+c45Fit <- train(class ~ .,
+                data = traindga,
+                method = "J48",
+                metric="ROC",
+                trControl = ctrl_fast)
+predsc45=predict(c45Fit,testdga)
+```
+
+```{r c452 }
+confusionMatrix(predsc45, testdga$class)
+```
+
+###Support Vector Machines using RBF kernel
+```{r svm}
+confusionMatrix(predssvm, testdga$class)
+```
+
+###Random Forest
+```{r rf}
+confusionMatrix(predsrf,testdga$class) #first level failure, second level success
+```
+
+##Model performance comparison in terms of ROC, sensitivity and Specifity
+Sensitivity=Recall=DetectionRate
+1-Specificity=False Alarm Rate
+
+```{r modelcomp, echo=FALSE}
+resamp=resamples(list(SVM=svmFit,RF=rfFit,C45=c45Fit,glm=glmFit))
+bwplot(resamp)
+```
+
+Classification trees (c45 and RF) seems to outperforms SVM and Logistic regression:
+however the FPR is higher than expected (i.e. 0.07). This can be avoided by incresing the probability threshold.
+
+#Probability of domain names INCORRECTLY detected as DGA (AKA FPR)
+```{r prob1, echo=FALSE}
+testdga=cbind(testdga,predsrf)
+testdga=cbind(testdga,predsrfprobs$dga)
+probs=filter(testdga,class=='legit' & predsrf=='dga')[c(1,15)]
+```
+
+```{r prob}
+print(probs)
+bwplot(probs$`predsrfprobs$dga`)
+```
+
+##Increasing threshold up to 0.9 we can reduce FP (while incresing the FN)
+```{r newpreds}
+predsrf2=ifelse(testdga$predsrfprobs >0.9,'dga','legit')
+confusionMatrix(predsrf2,testdga$class)
+```
