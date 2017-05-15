@@ -1,0 +1,97 @@
+---
+title: "lstm-dga-mxnet"
+author: "Harpo"
+date: "25/2/2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(mxnet)
+```
+
+## Predicting Domain Generation Algorithms with Long Short-Term Memory Networks 
+Article avaiable on arXiv:1611.00791v1
+
+```{r}
+load("/home/harpo/Dropbox/ongoing-work/git-repos/dga-algos/data/dga-whalebon-sample.rda")
+valid_voc<-sapply(dnsdata$domain,function(x){
+                                (strsplit(x,NULL)[[1]])
+})
+valid_voc=unique(as.vector(unlist(valid_voc)))
+valid_voc_encode=seq(1,length(valid_voc))
+names(valid_voc_encode)<-valid_voc
+
+maxlen=max(sapply(dnsdata$domain,nchar))
+max_features=length(valid_voc_encode)+1
+
+X=lapply(dnsdata$domain,function(x){
+    as.vector(sapply( strsplit(x,NULL)[[1]],function(x) 
+      {valid_voc_encode[x]}))
+})
+Y=ifelse(dnsdata$label=="Normal",0,1)
+Y=as.array(Y)
+Xpadded=lapply(X,function(x) c(unlist(x),rep(0,maxlen-length(unlist(x)))))
+#X=matrix(unlist(Xpadded),ncol = maxlen,byrow = T)
+X=array(unlist(Xpadded),c(maxlen,(length(unlist(Xpadded))/maxlen)))
+
+        
+        
+        
+#X=t(X)
+data=list(data=X[,1:10], label=Y[1:10])
+```
+
+```{r}
+save(X,file="/home/harpo/Dropbox/ongoing-work/git-repos/dga-algos/data/dga-whalebon-sample-encoded.rda")
+```
+
+Example from:
+https://github.com/dmlc/mxnet-gtc-tutorial/tree/master/char-lstm
+https://github.com/endgameinc/dga_predict/tree/master/dga_classifier
+
+
+
+```{r}
+   batch.size = 32
+   seq.len = maxlen
+   num.hidden = 256  # LSTM hidden neurons
+   num.embed =  256
+   num.lstm.layer = 2
+   num.round = 2
+   learning.rate= 0.1
+   wd=0.00001
+   clip_gradient=1
+   update.period = 1
+
+```
+
+##Bucketing and padding
+Since mxnet lstm implementation is based on a unroll approach,  it needs to know the maximun size of a sequence. 
+Two solutions: padding or bucketing. The first one consists of using as input size at the largest sequence on the dataset. THe the one smaller, are simply filled with zeros. The problema with the previous is that for the smaller sequences the model will be inefficient. Alternative we can define a number of buckets size and pad each sentence to the length of the bucket above.
+
+
+```{r}
+ model <- mx.lstm(train.data=data,
+                    ctx=mx.gpu(0),
+                    num.round=num.round,           # Epochs
+                    update.period=update.period,   # The number of iterations to update parameters during training period
+                    num.lstm.layer=num.lstm.layer,
+                    seq.len=seq.len,               # The length of the input sequence.
+                    num.hidden=num.hidden,
+                    num.embed=num.embed,     #The output dim of embedding.
+                    num.label=2,             #The number of labels used
+                    batch.size=batch.size,
+                    input.size=max_features,         #The input dim of one-hot encoding of embedding
+                    initializer=mx.init.uniform(0.1),
+                    learning.rate=learning.rate,
+                    wd=wd,                    #weight decay
+                    clip_gradient=clip_gradient)
+
+```
+```{r}
+
+
+
+```
+

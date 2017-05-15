@@ -1,0 +1,83 @@
+---
+title: "word based DGA results"
+author: "Harpo Maxx"
+date: "16/3/2017"
+output: 
+  html_document:
+    highlight: espresso
+    theme: readable
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(message = FALSE, warning = FALSE)
+library(dplyr)
+library(ggplot2)
+library(plotly)
+library(scales)
+library(grid)
+library(gridExtra)
+```
+
+## Recall (Detection Rate) per domain type
+```{r, fig.height=3}
+worbased=c('dga.banjori', 'dga.suppobox', 'dga.volatile', 'dga.matsnu', 'dga.beebone', 'dga.madmax', 'dga.cryptowall')
+nntest=read.csv(file = "/home/harpo/Dropbox/ongoing-work/git-repos/dga-wb/test_edna.csv",header = T)
+
+nntest=nntest %>% mutate(predicted_class=ifelse(predicted_probability>0.90,1,0))
+nntest=nntest %>% mutate(label=tolower(label))
+
+recall=nntest %>% group_by(label) %>% summarise(recall=sum(predicted_class==class)/n(),support=n()) 
+precision_far=nntest %>% group_by(label) %>% summarise(precision=1-(sum(predicted_class!=class)/n()),support=n()) 
+
+recall=recall %>% mutate(class=ifelse(grepl('dga',label),1,0))
+
+#nntest %>% group_by(class,predicted_probability) %>% summarise(n=n())
+#recall=recall %>% filter( label %in% worbased)
+```
+
+**Testset size: `r nrow(nntest)`**
+
+```{r,fig.height=4, fig.height=4, fig.width=9}
+plot=ggplot(recall,aes(x=label,y=recall))+
+  geom_point(aes(size=support),color='black',fill='skyblue',shape = 21)+
+  geom_point(size=1,color='blue',fill='blue',shape = 21)+
+  ggtitle("NN trained only with Normal and word-based DGA domains")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  scale_color_gradient2(low = "cyan", mid='blue',high = "red")+
+   xlab('Types' )+ylab("Recall")+
+   guides(colour=FALSE,size=FALSE)+
+    scale_size_continuous(range = c(5,15))
+ # scale_size_area(max_size = 15) 
+ggplotly(plot)
+```
+
+
+```{r}
+library(lattice)
+data=nntest %>% filter(label %in% wordbased)
+bwplot(~predicted_probability|label,data=nntest %>% filter(label %in% worbased),do.out=F,layout=c(3,3))
+```
+
+
+## Character frequency distribution for word-based DGA
+```{r freq_char_wordbased, echo=TRUE, fig.height=6, fig.width=10}
+# calculate Char freq by DGA type
+#charlist_by_type_wb=class_dga  %>% filter (label %in% worbased) %>% group_by(label) %>% do(charlist= #unlist(sapply(.$sample, function(x) c(str_split(x,"")[1]))))
+load("/home/harpo/Dropbox/ongoing-work/git-repos/dga-algos/reports/robjs/charlist_by_type_wb.Rda")
+P<-list()
+for (l in charlist_by_type_wb$label){
+  dga_type=as.vector(unlist(charlist_by_type_wb %>% filter(label==l) %>% select(charlist)))
+
+  p<-ggplot(data.frame(charlist=dga_type),aes(x=charlist))+
+    geom_bar(col="black",fill='orange',aes(y = (..count..)/sum(..count..)))+
+    scale_y_continuous(labels=percent)+ylab("Percent")+xlab("")+
+    ggtitle(l)+
+    theme(plot.title = element_text(size = 5))+
+    theme_bw()
+  P<-c(P,list(p))
+}
+do.call(grid.arrange,c(P,ncol=3))
+```
+

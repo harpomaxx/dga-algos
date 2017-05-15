@@ -1,0 +1,200 @@
+---
+title: "dga-wb-feeds"
+author: "Harpo"
+date: "2/23/2017"
+output: 
+  html_document: 
+    highlight: espresso
+    theme: readable
+    code_folding: hide
+---
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(stringr)
+library(lattice)
+library(doMC)
+library(plotly)
+registerDoMC(cores=5)
+```
+
+Several analisys on DGA and Legit Domains
+
+
+```{r, message=FALSE, warning=FALSE}
+# Calculate the entropy for a given string
+entropy <- function(instr) {
+  if (mode(instr)!="character")
+    stop("Expected character array, got ", mode(instr))
+  sapply(instr, function(x) {
+    cts <- table(unlist(strsplit(x, NULL)))
+    lns <- nchar(x)
+    -sum((cts/lns) * log2(cts/lns))    
+  })
+}
+
+vow2conr <- function(str){
+  vowels=c("a","e","i","o","u")
+  cons= letters [! letters %in% vowels]
+  str=tolower(strsplit(str, "")[[1]])
+  vowcount=as.vector(unlist(table(str%in%vowels)["TRUE"]))
+  conscount=as.vector(unlist(table(str%in%vowels)["FALSE"]))
+  
+  return(vowcount/conscount)
+}
+
+
+```
+
+
+## Read dataset and do some cleaning...
+
+```{r, message=FALSE, warning=FALSE}
+dnsdata=read_tsv('/home/harpo/Dropbox/ongoing-work/git-repos/dga-wb/datasets/whalebone/domaindb-15-03-2017.tsv.gz')
+dnsdata=dnsdata %>%  mutate(label=str_replace(label,"DGA.360","DGA"))
+dnsdata=dnsdata %>% separate(label,into=c("label","detail"),sep="[.]{1}")
+dnsdata=dnsdata %>%  mutate(detail=str_replace(detail,"Cryptolocker","cryptolocker"))
+print(dnsdata %>% group_by(label) %>% summarise(count=n()),n=100)
+print(dnsdata %>% group_by(detail) %>% summarise(count=n()),n=100)
+
+```
+
+
+## calculate some features (entropy, vowel2cons ratio, word len)
+```{r, message=FALSE, warning=FALSE}
+offset=length(dnsdata$domain)%%100
+dnsdata=dnsdata[1:(length(dnsdata$domain)-offset),]
+enpar= foreach(i=seq(1,(length(dnsdata$domain)),100), .combine = 'c') %dopar% {
+    (lapply(dnsdata$domain[i:(i+99)],entropy))
+  }
+
+len = foreach(i=seq(1,(length(dnsdata$domain)),100), .combine = 'c') %dopar% {
+    (lapply(dnsdata$domain[i:(i+99)],nchar))
+}
+
+vcr= len = foreach(i=seq(1,(length(dnsdata$domain)),100), .combine = 'c') %dopar% {
+    (lapply(dnsdata$domain[i:(i+99)],vow2conr))
+}
+
+  
+dnsdata$entropy=as.vector(unlist(enpar))
+dnsdata$len=as.vector(unlist(len))
+dnsdata$vcr=as.vector(unlist(vcr))
+
+#dnsdata %>% group_by(detail) %>% summarise(avg_entropy=mean(entropy),sd_entropy=sd(entropy))
+#dnsdata %>% group_by(detail) %>% summarise(max_len=max(len),min=min(len))
+```
+
+```{r, eval=FALSE, include=FALSE}
+save(dnsdata,file="/home/harpo/Dropbox/ongoing-work/git-repos/dga-algos/data/dga-whalebon-sample.rda")
+```
+
+```{r}
+dns_legit=dnsdata%>% filter(label=="Normal")
+dns_dga=dnsdata%>% filter(label!="Normal")
+```
+
+# Density plot for Domain Entropy
+```{r}
+ggplot(dnsdata)+
+  geom_density( aes(x=entropy),fill='skyblue',alpha=0.5) + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+
+
+
+# Density plot for Domain Entropy (classes)
+```{r}
+ggplot()+
+  geom_density(data=dns_legit, aes(x=entropy),fill='skyblue',alpha=0.5) + 
+  geom_density(data=dns_dga, aes(x=entropy),fill='orange',alpha=0.5) + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+## Density plot of Domain Length  (classes)
+```{r}
+ggplot()+
+  geom_density(data=dns_legit, aes(x=len),fill='skyblue',alpha=0.5) + 
+  geom_density(data=dns_dga, aes(x=len),fill='orange',alpha=0.5) + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+```
+
+# Density plot for Vowel/consonant ratio (classes)
+```{r}
+
+ggplot()+
+  geom_density(data=dns_legit, aes(x=vcr),fill='skyblue',alpha=0.5) + 
+  geom_density(data=dns_dga, aes(x=vcr),fill='orange',alpha=0.5) + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+ggplotly()
+```
+
+```{r}
+ggplot()+
+  geom_density(data=dnsdata, aes(x=entropy,fill=detail),alpha=0.5) + 
+  theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+ggplotly()
+```
+
+
+### Added
+### NEED FIX
+
+```{r, fig.height=2, fig.width=8}
+require(scales)
+
+fp=nntest %>% filter(class == 1)
+charlist=unlist(sapply(fp$sample, function(x) c(str_split(x,"")[1])))
+
+freq_char_dga=ggplot(data.frame(charlist),aes(x=charlist))+
+   geom_bar(col="black",fill='white',aes(y = (..count..)/sum(..count..)))+
+  scale_y_continuous(labels=percent,limits=c(0,0.1))+ylab("Percent")+xlab("DGA domains")+
+#  ggtitle("Character Frequency Distribution for DGA domains")+
+  theme_bw()
+```
+
+
+```{r, fig.height=2, fig.width=8}
+
+normal=nntest %>% filter(class == 0)
+charlist_normal=unlist(sapply(normal$sample, function(x) c(str_split(x,"")[1])))
+
+freq_char_legit=ggplot(data.frame(charlist_normal),aes(x=charlist_normal))+
+   geom_bar(col="black",fill='white',aes(y = (..count..)/sum(..count..)))+
+  scale_y_continuous(labels=percent)+ylab("Percent")+xlab("Legit domains")+
+ # ggtitle("Character Frequency Distribution for Legit domains")+
+  theme_bw()
+```
+
+
+```{r, fig.height=4, fig.width=10}
+library(grid)
+library(gridExtra)
+grid.arrange(freq_char_dga, freq_char_legit, nrow = 2, ncol=1)
+```
+
+
+```{r}
+class_dga=nntest %>% filter(class == 1)
+
+# calculate Char freq by DGA type
+#charlist_by_type=class_dga  %>% group_by(label) %>% do(charlist= unlist(sapply(.$sample, function(x) c(str_split(x,"")[1]))))
+#dga_type=as.vector(unlist(charlist_by_type %>% filter(label=="DGA.Goz") %>% select(charlist)))
+
+dga_type=as.vector(unlist(class_dga %>% filter(label=="DGA.suppobox") %>%  do(charlist= unlist(sapply(.$sample, function(x) c(str_split(x,"")[1]))))))
+
+ggplot(data.frame(charlist=dga_type),aes(x=charlist))+
+   geom_bar(col="skyblue",fill='orange',aes(y = (..count..)/sum(..count..)))+
+  scale_y_continuous(labels=percent)+ylab("Percent")+xlab("Domains")+
+ # ggtitle("Character Frequency Distribution for Legit domains")+
+  theme_bw()
+
+```
+
+

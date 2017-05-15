@@ -1,0 +1,416 @@
+---
+title: "WB client 1 hour profile generation (last 8 days) "
+output: 
+  html_notebook: 
+    code_folding: hide
+    toc: yes
+---
+
+<style type="text/css">
+
+body, td {
+   font-size: 14px;
+}
+code.r{
+  font-size: 9px;
+}
+pre {
+  font-size: 9px
+}
+</style>
+
+
+
+```{r, echo=FALSE, fig.height=12, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(lubridate)
+library(doMC)
+registerDoMC(cores=3)
+domains<-read_csv(file="/home/harpo/Dropbox/ongoing-work/git-repos/dga-wb/datasets/database.csv",progress = T)
+summary(domains)
+
+  #domains %>% filter(is.na(dga.class)) 
+```
+
+
+
+
+## Feature Generation
+
+Feature file available at  https://www.dropbox.com/s/vl9y5p32e2umxu1/wbone-client-profile-1h-last8days.csv?dl=1
+
+
+```{r feature generation, echo=TRUE}
+max_num_profiles=192
+windowsize<-60*1 # 24Hs window
+initial_tm<-domains$timestamp[nrow(domains)-1]
+clients_profiles<-data.frame()
+
+clients_profiles<-foreach (profilenum = 0:max_num_profiles,.combine='rbind', .multicombine=FALSE ) %dopar% {
+  currenttm<-initial_tm - (minutes(windowsize)*profilenum)
+  domains_window<-domains %>% filter(timestamp > currenttm -minutes(windowsize) & timestamp < currenttm)
+ 
+   # Total amount of domans requested 
+  n_requests <-domains_window %>% group_by(client) %>% 
+  summarise(tot_requests=n()) #%>% arrange(desc(tot_requests))
+
+  # Total amount of domains detected by the NN and ratio.
+  n_detected<-domains_window %>% group_by(client) %>% 
+  summarise(tot_detected=sum(ifelse(dga.class==1,1,0),na.rm=T))
+  n_detected$ratio_detected<-n_detected$tot_detected/n_requests$tot_requests
+
+
+  # Total amount of NXDOMAIN and ratio
+  n_nx<-domains_window  %>% group_by(client) %>% 
+  summarise(tot_nx=sum(grepl("NXDOMAIN",answer)))
+  n_nx$ratio_nx<-n_nx$tot_nx/n_requests$tot_requests
+
+  # Total amount of SERVFAIL and ratio
+  n_fail<-domains_window  %>% group_by(client) %>% 
+  summarise(tot_fail=sum(grepl("SERVFAIL",answer)))
+  n_fail$ratio_fail<-n_fail$tot_fail/n_requests$tot_requests
+
+  # Total amount of MX and ratio
+  n_mx<-domains_window  %>%  group_by(client)  %>% 
+  summarise(tot_mx=sum(query_type=="MX")) 
+  n_mx$ratio_mx<-n_mx$tot_mx/n_requests$tot_requests
+
+  
+  n_reverse <- domains_window %>% group_by(client) %>%
+  summarise(tot_reverse=sum(grepl("in-addr.arpa.",query))) 
+  n_reverse$ratio_reverse<-n_reverse$tot_reverse/n_requests$tot_requests
+
+    
+  # domains sharing the same IP 
+  all_sameip<-domains_window %>%  
+  filter(query_type=="A" & answer_ip!="NXDOMAIN" & answer_ip!="SERVFAIL") %>%  
+  group_by(client,answer_ip) %>% 
+  summarise(tot_distquery=n_distinct(query)) 
+
+  #The max (int) amount of requests where one IP resolved to more than one domain.
+  max_sameip<-all_sameip %>% filter(tot_distquery >1) %>% group_by(client) %>% summarise(max_sameip=max(tot_distquery))
+
+   #The avg  of requests where one IP resolved to more than one domain.
+  avg_sameip<-all_sameip %>% filter(tot_distquery >1) %>% group_by(client) %>% summarise(avg_sameip=mean(tot_distquery))
+
+  #The avg  of requests where one IP resolved to more than one domain.
+  sd_sameip<-all_sameip %>% filter(tot_distquery >1) %>% group_by(client) %>% summarise(sd_sameip=sd(tot_distquery))
+
+  #The amount of groups of same IPs that resolved to more than one domain.
+  n_sameip<-all_sameip %>% filter(tot_distquery >1) %>% group_by(client) %>% summarise(tot_sameip=sum(tot_distquery))
+  
+  
+  # The amount of domains that each of them had more than 1 IP.
+  # (Fast flux)
+  all_samedomain<-domains_window %>%  
+  filter(query_type=="A" & answer_ip!="NXDOMAIN" & answer_ip!="SERVFAIL") %>%  
+  group_by(client,query) %>% 
+  summarise(tot_distdomain=n_distinct(answer_ip)) 
+  
+  #The max (int) amount of requests where one domain resolved to more than one IP
+  max_samedomain<-all_samedomain %>% filter(tot_distdomain >1) %>% group_by(client) %>% summarise(max_samedomain=max(tot_distdomain))
+
+  #The avg  of requests where one domain resolved to more than one IP
+  avg_samedomain<-all_samedomain %>% filter(tot_distdomain >1) %>% group_by(client) %>% summarise(avg_samedomain=mean(tot_distdomain))
+
+  #The avg  of requests where one domain resolved to more than one IP
+  sd_samedomain<-all_samedomain %>% filter(tot_distdomain >1) %>% group_by(client) %>% summarise(sd_samedomain=sd(tot_distdomain))
+
+  #The amount of groups of same domain that resolved to more than one IP
+  n_samedomain<-all_samedomain %>% filter(tot_distdomain >1) %>% group_by(client) %>% summarise(tot_samedomain=sum(tot_distdomain))
+  
+  
+  # Profile Database Creation ------
+  
+  client_profile<-inner_join(n_requests,n_detected,by="client") %>% 
+  inner_join(n_nx,by="client") %>%
+  inner_join(n_mx,by="client") %>%
+  inner_join(n_fail,by="client") %>%
+  inner_join(n_reverse,by="client") %>%
+  full_join(max_sameip,by="client") %>%
+  full_join(n_sameip,by="client") %>%
+  full_join(avg_sameip,by="client") %>%
+  full_join(sd_sameip,by="client")  %>%
+  full_join(n_samedomain,by="client") %>%
+  full_join(max_samedomain,by="client") %>%
+  full_join(avg_samedomain,by="client") %>%
+  full_join(sd_samedomain,by="client") 
+    
+  
+  # replace NAs with zeros
+  client_profile<-client_profile %>% mutate(max_sameip=ifelse(is.na(max_sameip),0,max_sameip),
+                                            tot_sameip=ifelse(is.na(tot_sameip),0,tot_sameip),
+                                            avg_sameip=ifelse(is.na(avg_sameip),0,avg_sameip),
+                                            sd_sameip=ifelse(is.na(sd_sameip),0,sd_sameip)
+                                            
+                                              )
+  client_profile<-client_profile %>% mutate(max_samedomain=ifelse(is.na(max_samedomain),0,max_samedomain),
+                                            tot_samedomain=ifelse(is.na(tot_samedomain),0,tot_samedomain),
+                                            avg_samedomain=ifelse(is.na(avg_samedomain),0,avg_samedomain),
+                                            sd_samedomain=ifelse(is.na(sd_samedomain),0,sd_samedomain)
+                                            )
+  
+  client_profile<-client_profile %>% mutate(ratio_tot_samedomain=tot_samedomain/tot_requests) 
+  client_profile<-client_profile %>% mutate(ratio_max_samedomain=max_samedomain/tot_requests) 
+  client_profile<-client_profile %>% mutate(ratio_avg_samedomain=avg_samedomain/tot_requests) 
+  client_profile<-client_profile %>% mutate(ratio_sd_samedomain=sd_samedomain/tot_requests) 
+  
+  client_profile<-client_profile %>% mutate(ratio_tot_sameip=tot_sameip/tot_requests) 
+   client_profile<-client_profile %>% mutate(ratio_max_sameip=max_sameip/tot_requests) 
+   client_profile<-client_profile %>% mutate(ratio_avg_sameip=avg_sameip/tot_requests) 
+   client_profile<-client_profile %>% mutate(ratio_sd_sameip=sd_sameip/tot_requests) 
+ 
+  
+  
+  
+   client_profile$profilenum<-profilenum
+  client_profile$currenttm<-currenttm
+  #clients_profiles<-rbind(clients_profiles,client_profile)
+  #currenttm<-currenttm - minutes(windowsize)
+  
+  return(client_profile)
+}
+summary(clients_profiles)
+```
+
+
+```{r save-csv, eval=FALSE, include=FALSE}
+readr::write_csv(clients_profiles,"../data/wbone-client-profile-1h-last8days.csv")
+clients_profiles
+```
+
+```{r read-csv, eval=FALSE, include=FALSE}
+clients_profiles<-readr::read_csv("../data/wbone-client-profile-24hs-last3weeks.csv")
+clients_profiles %>% group_by(client) %>% summarise(nofprofiles=n_distinct(profilenum))
+clients_profiles %>% group_by(client) %>% summarise(tot_requests=sum(tot_requests))
+clients_profiles %>% group_by(client) %>% summarise(n=n())
+domains %>% filter(client=="1.202.236.136")
+clients_profiles %>% filter(client=="1.202.236.136")
+```
+
+
+```{r plot-tm-profiles, eval=FALSE, include=FALSE}
+
+ggplot(clients_profiles)+
+  geom_line(aes(x=currenttm,y=ratio_detected),color='red')+
+  geom_line(aes(x=currenttm,y=ratio_nx),color='blue')+
+  geom_line(aes(x=currenttm,y=ratio_mx),color='orange')+
+  geom_line(aes(x=currenttm,y=ratio_fail),color='skyblue')+
+  geom_line(aes(x=currenttm,y=ratio_tot_sameip),color='green')+
+  xlab("Datetime")+ylab("value")+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+  facet_wrap(~client,scales = "free_y")+
+  theme(strip.text.y = element_blank(), strip.text.x= element_blank(),strip.background = element_blank(),
+        axis.text=element_text(size=5)
+        )
+```
+
+
+## Selecting features
+
+```{r selecting features}
+client_profile_selected_features<-clients_profiles   %>% mutate(ratio_requests=tot_requests/max(tot_requests)) %>%
+  #select(client,tot_requests, tot_detected,tot_nx,tot_mx,tot_fail,tot_reverse,tot_samedomain,tot_sameip)
+ select(client,tot_requests,ratio_requests,ratio_detected,ratio_nx,ratio_mx,ratio_fail,ratio_reverse,
+        ratio_tot_samedomain,ratio_tot_sameip,
+        ratio_avg_samedomain,ratio_avg_sameip,
+        ratio_sd_samedomain,ratio_sd_sameip)
+client_profile_ratio<-unique(client_profile_ratio)
+  #select(client,tot_requests,tot_detected,max_sameip,avg_sameip,sd_sameip,max_samedomain,avg_samedomain,max_samedomain,ratio_nx)
+client_profile_selected_features
+```
+
+## Matrix Correlation heatmap
+
+```{r, fig.height=8, fig.width=12}
+library(d3heatmap)
+corr_client_profile_selected_features<-cor(client_profile_selected_features[,c(-1,-2)],use="complete.obs")
+d3heatmap(corr_client_profile_selected_features,symm=T,colors = "Reds",Rowv=T,
+          width = 600,height = 400, 
+          yaxis_font_size = "8pt",
+          xaxis_font_size = "8pt")
+```
+## Per Feature Scatter plot
+
+```{r, fig.height=12}
+pairs(client_profile_selected_features[,c(-1,-2)],cex.labels = 1.6)
+```
+
+```{r}
+ggplot(client_profile_ratio,aes(ratio_nx,ratio_detected))+
+  geom_point(aes(alpha=tot_requests),color='skyblue')+
+  geom_smooth(method = 'lm',color='orange')+
+  theme_bw()
+```
+```{r, eval=FALSE, include=FALSE}
+## Client features heatmap
+## (only considering ratios)
+#client_profile_ratio<-client_profile_ratio %>% mutate(id=as.numeric(as.factor(client)))
+
+d3heatmap(t(client_profile_ratio[,-1]),symm=F,colors = "Reds",Rowv=F,
+          #labCol = t(client_profile_ratio[,1]),
+          width = 1040,
+          height = 250, 
+          yaxis_font_size = "8pt",
+          xaxis_font_size = "0pt",anim_duration = 0)
+```
+
+## Kmeans clustering
+
+```{r}
+
+kmeans_model<-kmeans(client_profile_selected_features[,c(-1,-2)],centers=5,nstart=40)
+client_profile_ratio<-cbind(client_profile_selected_features,cluster=as.factor(kmeans_model$cluster))
+client_profile_ratio %>% group_by(cluster) %>% summarise(n=n())
+save(kmeans_model,file="../models/kmeans_model_1h_last8days.Rdata")
+```
+
+
+## Some basic per cluster information
+
+```{r}
+cluster_summary<-unique(client_profile_ratio[,c(-2)]) %>% group_by(cluster) %>% summarise(n=n(),nx=mean(ratio_nx),mx=mean(ratio_mx),sameip=mean(ratio_tot_sameip),samedomain=mean(ratio_tot_samedomain),reverse=mean(ratio_reverse),detected=mean(ratio_detected),requests=mean(ratio_requests),fail=mean(ratio_fail), ipdist=n_distinct(client))
+                                                                                         
+cluster_summary
+
+d3heatmap(cluster_summary[,c(-1,-2,-11)],colors = "Reds",Rowv=T,
+          width = 700,height = 400, 
+          yaxis_font_size = "8pt",
+          xaxis_font_size = "8pt")
+```
+
+## Clustering Results 
+According to clustering results
+
+1. **Cluster n. 1** groups clients with high NX replies as well as some reverse queries among others. **(possible DGA)**
+2. **Cluster n. 2** groups those clients not showing DGA or other malwaver behavior **(Possible NORMAL??)**
+3. **Cluster n. 3** groups those clients with the highest *samedomains* values **(possible Fastflux?)**
+4. **Cluster n. 4** groups those clients with a value increment  for *sameip* and *samedomains* **(Possible DGA/Fastflux? Not really)**
+5. **Cluster n. 5** groups those clients with high values in FAIL queries **(Possible what??)**
+
+*some IPS to check*
+
+*213.191.105.210* shows some possible random generated domains
+
+*213.191.105.242* Shows a lot of NX records. Some queries contain the kk. TLD (??)
+
+## T-NSE 2D representation with clusters 
+
+**Limitations of PCA**
+
+PCA is a linear algorithm. It will not be able to interpret complex polynomial relationship between features. On the other hand, t-SNE is based on probability distributions with random walk on neighborhood graphs to find the structure within the data.
+
+
+
+
+
+```{r}
+tsne_model<-Rtsne(unique(client_profile_ratio[,c(-2,-ncol(client_profile_ratio))]),pca=FALSE, pca_center =TRUE, pca_scale=TRUE,check_duplicates=F,
+                  perplexity = 400, max_iter = 1000)
+```
+
+
+To remember: It seems that if we generate 1h profiles the the 2D representation tends to be more difficult to analyze. The are many points very similar corresponding to the same client profile at different time periods. Using a higher perplexity value seems to solve that issue. 
+
+Each point represents a 1 hour profile. The **size** of a given point/profile corresponds to the request ratios for that profile. Finally,  **color** presents differents clusters.
+Remember you can select/deselect the cluster by clicking the legend. 
+
+```{r plot tnse clustering, warning=FALSE}
+client_profile_unique<-unique(client_profile_ratio[,c(-2)])
+tsne_client_profile<-data.frame(tsne_model$Y,cluster=client_profile_unique$cluster,client=client_profile_unique$client,requests=
+                                  client_profile_unique$ratio_requests)
+
+sampleid<-sample(nrow(tsne_client_profile),nrow(tsne_client_profile))
+
+g<-ggplot(tsne_client_profile[sampleid,],aes(x=X1,y=X2))+
+  geom_point(aes(color=as.factor(cluster),size=requests,text=paste("ipddr",client)))+
+  #geom_point(aes(shape=asignacion),size=3)+
+  ylab("X1")+xlab("X2")+
+  theme_classic()+
+#scale_shape_manual(values=c(8,6))+
+   guides(color=FALSE,alpha=FALSE)
+ggplotly(g)
+
+```
+
+## Decision Tree Analysis
+
+```{r dtree analisys, fig.height=9, fig.width=16}
+library(rpart.plot)
+library(rpart)
+library(rpart.utils)
+
+formula <- as.formula(cluster~.)
+tree=rpart(formula,data=client_profile_ratio[,c(-1,-2,-3,-4)],control = rpart.control(minsplit=500, cp=0.005,xval=10),model=T,x=T,y=T)
+rpart.plot(tree,
+           extra=4, 
+           box.palette="GnBu",
+           branch.lty=5, shadow.col=0, nn=TRUE, cex =0.9,under=T
+        )
+printcp(tree)
+```
+
+
+## Clients in cluster 1
+
+```{r}
+tsne_client_profile %>% filter(cluster==1) %>% group_by(client) %>% summarise(profiles=n()) %>% arrange(desc(profiles)) %>% filter(profiles>0 )  %>% select(client)
+```
+
+## Clients in cluster 2
+
+```{r}
+tsne_client_profile %>% filter(cluster==2) %>% group_by(client) %>% summarise(profiles=n()) %>% arrange(desc(profiles)) %>% filter(profiles>0)  %>% select(client)
+```
+
+## Clients in cluster 3
+
+```{r}
+tsne_client_profile %>% filter(cluster==3) %>% group_by(client) %>% summarise(profiles=n()) %>% arrange(desc(profiles)) %>% filter(profiles>0)  %>% select(client)
+```
+## Clients in cluster 4
+
+```{r}
+tsne_client_profile %>% filter(cluster==4) %>% group_by(client) %>% summarise(profiles=n()) %>% arrange(desc(profiles)) %>% filter(profiles>0)  %>% select(client)
+```
+
+## Clients in cluster 5
+
+```{r}
+tsne_client_profile %>% filter(cluster==5) %>% group_by(client) %>% summarise(profiles=n()) %>% arrange(desc(profiles)) %>% filter(profiles>0)  %>% select(client)
+```
+
+## Clients in cluster 6
+
+```{r}
+tsne_client_profile %>% filter(cluster==6) %>% group_by(client) %>% summarise(profiles=n()) %>% arrange(desc(profiles)) %>% filter(profiles>0) %>% select(client)
+```
+
+```{r, eval=FALSE, warning=FALSE, include=FALSE}
+## PCA 2D representation 
+
+library(plotly)
+pca<-prcomp(client_profile_ratio[,c(-1,-2,-3,-ncol(client_profile_ratio))], center = TRUE, scale. = TRUE) 
+
+pca_client_profile<-data.frame(pca$x,client=client_profile_ratio$client,
+                               detected=ifelse(client_profile_ratio$ratio_detected>0,"detected","notdetected"),
+                               ratio_requested=client_profile_ratio$ratio_requests,
+                               requested=client_profile_ratio$tot_requests,
+                               cluster=client_profile_ratio$cluster
+                               )
+
+
+g<-ggplot(pca_client_profile,aes(x=PC3,y=PC2))+
+  geom_jitter(aes(color=as.factor(cluster),text=paste(client,"<BR>",requested)))+
+  #geom_point(aes(shape=asignacion),size=3)+
+  ylab("PC1")+xlab("PC2")+
+  theme_classic()+
+#scale_shape_manual(values=c(8,6))+
+   guides(color=FALSE,alpha=FALSE)
+g
+
+ggplotly(g)
+```
+
+
